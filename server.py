@@ -1,191 +1,81 @@
+#!/usr/bin/env python2
 import socket
 import sys
-import os
-from threading import Thread
-import json
-from pprint import pprint
-import time
+from thread import *
 import threading
 
-routingTable = {}
-hostname = ""
-hostip = ""
-hostport = ""
-neighbor_dict = {}
-allHosts = {}
-lock = threading.Lock()
+print_lock = threading.Lock()
 
+portToClient={"11111":"H1","11112":"H2","11113":"R1","11114":"R2","11115":"R3","11116":"R4"}
+serverPortMapping={"H1":"11121","H2":"11122","R1":"11123","R2":"11124","R3":"11125","R4":"11126"}
 
-def startServer(host, listenPort):
+def getDV(data):
+    lines = data.split(":")
+    g = {}
+    for i in lines:
+        tt=i.split(",")
+        g[tt[0]]=tt[1]
+    return g
+
+def writeFromG(g,host):
+    file = open(host+'.txt', 'w')
+    ret=''
+    cnt=0
+    for key,val in g.iteritems():
+        file.write(key+","+val+"\n")
+        if(cnt):
+            ret=ret+":"+key+","+val
+        else:
+            ret=ret+key+","+val
+        cnt=cnt+1
+    return ret
+
+def update(host,data,sPort):
+    global mapping
+    ff = open(host+'.txt', 'rb')
+    f = ff.read().splitlines()
+    ff.close()
+    x = f[0]
+    for i in range(1, (len(f))):
+        x = x + ":" + f[i]
+    g=getDV(x)
+    g1=getDV(data)
+
+    for key,val in g1.iteritems():
+        print key+"#"+val
+        if(key==host):
+            continue
+        elif(portToClient[str(sPort)] in g and int(g[key])>int(val)+int(g[portToClient[str(sPort)]])):
+            g[key]=str(int(val)+int(g[portToClient[str(sPort)]]))
+
+    return writeFromG(g,host)
+
+def threaded(c,host,sPort):
+    while True:
+        data = c.recv(1024)
+        if not data:
+            print_lock.release()
+            break
+        data = update(host,data,sPort)
+        c.send(data)
+    c.close()
+
+def Main(host):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind((host, listenPort))
-    s.listen(1)
-
-    while 1:
-        # print "Waiting for connection"
-        conn, addr = s.accept()
-        print 'Connected by', addr
-        data = conn.recv(4096).decode('utf8')
-        if not data: break
-        OnRecieve(data)
-        # conn.send("Recieved"+data)
-        conn.close()
-
-
-def SendData(host, port, data):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.connect((host, port))
-    s.sendall(data.encode('utf8'))
-    # data = s.recv(1024);
-    # print data
+    s.bind(("", int(serverPortMapping[host])))
+    print("server active at port", serverPortMapping[host])
+    s.listen(5)
+    print("socket is listening")
+    while True:
+        c, addr = s.accept()
+        print_lock.acquire()
+        print('Connected to :', addr[0], ':', addr[1])
+        start_new_thread(threaded, (c,host,addr[1]))
     s.close()
 
 
-def SendAllNeighbors(data):
-    for neighbor in neighbor_dict:
-        ip = allHosts[neighbor][0]["ip"]
-        port = allHosts[neighbor][1]["port"]
-        # print ip, port, data
-        SendData(ip, int(port), data)
-
-
-# https://stackoverflow.com/questions/2835559/parsing-values-from-a-json-file
-def populate_dvt(dvt_path):
-    dist_vector = json.load(open(dvt_path))
-    hosts = ['H1', 'R1', 'R2', 'R3', 'R4', 'H2']
-    neighbors = populate_neighbors('neighbor.txt')
-
-    for router in dist_vector:
-        for host in hosts:
-            # add me
-            if host == router:
-                dist_vector[router].append({"dest": host, "cost": 0, "nexthop": host})
-            elif host not in neighbors[router]:
-                dist_vector[router].append({"dest": host, "cost": sys.maxsize, "nexthop": ''})
-
-    apnajson = dist_vector[hostname]
-    apnaroute = {}
-    for item in apnajson:
-        apnaroute[item["dest"]] = (item["cost"], item["nexthop"])
-
-    # print apnaroute
-
-    # pprint(dist_vector)
-    return apnaroute
-
-
-def populate_neighbors(neighbor_path):
-    jsondata = json.load(open(neighbor_path))
-    # pprint(neighbor_list)
-    dic = {}
-    for host in jsondata:
-        l = []
-        for index in range(len(jsondata[host])):
-            l.append(jsondata[host][index]["neighbor"])
-        dic[host] = l
-
-    return dic
-
-
-def populate_ips(ip_path):
-    # "om_points": "value"
-    jsondata = json.load(open(ip_path))
-
-    return jsondata
-
-
-def myfunc(ip, port):
-    # print ip, port
-    startServer(ip, int(port));
-
-
-def StartServerThread():
-    global hostname, hostip, hostport, routingTable, neighbor_dict
-    t = Thread(target=myfunc, args=(hostip, hostport))
-    t.start()
-
-
-def printRoutingTable():
-    global hostname, routingTable, neighbor_dict
-    for key in routingTable.keys():
-        print key, "|", routingTable[key][0], "|", routingTable[key][1]
-
-
-def readConfig():
-    global hostname, hostip, hostport, routingTable, neighbor_dict, allHosts
-
-    dist_vector = populate_dvt('table.txt')
-    neighbour_dict = populate_neighbors('neighbor.txt')
-    hostdict = populate_ips('ip_config.txt')
-
-    allHosts = hostdict;
-    hostip = hostdict[hostname][0]["ip"]
-    hostport = hostdict[hostname][1]["port"]
-
-    routingTable = dist_vector
-    neighbor_dict = neighbour_dict[hostname]
-
-
-def OnRecieve(data):
-    global lock
-    lock.acquire()
-
-    # ectractNeighbor Routing table
-    datab = json.loads(data)
-
-    neighborRoutingTable = datab[0]
-    sender = datab[1]
-    # print "################## " + sender
-    # print neighborRoutingTable
-
-    updated = False
-    # Run Bellman Ford
-    for x in neighborRoutingTable.keys():
-        distance = routingTable[sender][0] + neighborRoutingTable[x][0]
-        if routingTable[x][0] > distance:
-            routingTable[x] = (distance, sender)
-            updated = True;
-
-    # print "Bellman Ford Done!!!!!!!!"
-    # if update send to all neighbors
-    if updated:
-        payload = json.dumps([routingTable, hostname])
-        print "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%Update Routing Table at " + hostname + " %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
-        # print routingTable
-        printRoutingTable()
-        print "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%Updated Routing Table at " + str(
-            time.time()) + " %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
-        SendAllNeighbors(payload)
-
-    lock.release()
-
-
-def test_populate_dvt():
-    dvt_path = sys.argv[1]
-    dist_vector = populate_dvt('table.txt')
-    # print dist_vector["H1"]
-    return dist_vector
-
-
-def test_populate_neighbors():
-    neighbour_dict = populate_neighbors('neighbor.txt')
-    print neighbour_dict
-
-
 if __name__ == '__main__':
-
-    hostname = sys.argv[1]
-    readConfig();
-    StartServerThread();
-
-    # print hostip, hostport
-
-    time.sleep(10)
-    print "%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% " + hostname + " is active at " + str(
-        time.time()) + " %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%"
-
-    payload = json.dumps([routingTable, hostname])
-    SendAllNeighbors(payload)
-
-    while 1:
-        x = 2
+    if(len(sys.argv)!=2):
+        print "Input Error."
+    else:
+        Main(sys.argv[1])
